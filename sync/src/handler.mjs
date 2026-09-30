@@ -4,7 +4,7 @@
 // de Supabase guardada en SSM.
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
-import { SQL, monthRange, buildPayload, summarize } from "./payload.mjs";
+import { SQL, SQL_OWNERS, monthRange, buildPayload, summarize } from "./payload.mjs";
 
 const DATA_FUNCTION = process.env.DATA_FUNCTION || "seeds-docs-mcp-data";
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://xrqxikvhhkkxitsbqxkv.supabase.co";
@@ -38,14 +38,15 @@ async function supabase(key, path, init = {}) {
   return res.status === 204 || init.method === "POST" ? null : res.json();
 }
 
-// Año en curso (enero a diciembre) en hora de Argentina.
-function currentYearRange() {
-  const y = new Intl.DateTimeFormat("en", { timeZone: "America/Argentina/Buenos_Aires", year: "numeric" }).format(new Date());
-  return [`${y}-01`, `${y}-12`];
+// Del año anterior al siguiente (hora de Argentina): histórico para la base y la velocidad de ventas, y el año
+// que viene para poder proyectar el Q1 con el Q4 como base.
+function projectionRange() {
+  const y = +new Intl.DateTimeFormat("en", { timeZone: "America/Argentina/Buenos_Aires", year: "numeric" }).format(new Date());
+  return [`${y - 1}-01`, `${y + 1}-12`];
 }
 
-export async function runSync({ write = false, from, to, prevContracts } = {}) {
-  [from, to] = from && to ? [from, to] : currentYearRange();
+export async function runSync({ write = false, from, to, prevContracts, includeRow = false } = {}) {
+  [from, to] = from && to ? [from, to] : projectionRange();
   const months = monthRange(from, to);
   const key = write || !prevContracts ? await supabaseKey() : null;
 
@@ -56,8 +57,8 @@ export async function runSync({ write = false, from, to, prevContracts } = {}) {
     prevContracts = prev?.contracts || [];
   }
 
-  const rows = await queryPlatform(SQL, [from, to]);
-  const { row, sinTc } = buildPayload(rows, months, prevContracts);
+  const [rows, owners] = await Promise.all([queryPlatform(SQL, [from, to]), queryPlatform(SQL_OWNERS, [])]);
+  const { row, sinTc } = buildPayload(rows, months, prevContracts, owners);
   const summary = summarize(row, sinTc);
 
   if (prevContracts.length && row.contracts.length < MIN_RATIO * prevContracts.length)
@@ -73,7 +74,7 @@ export async function runSync({ write = false, from, to, prevContracts } = {}) {
     if (prev) await upsert({ ...prev, quarter: "dataset-anterior" });
     await upsert(row);
   }
-  return { escrito: write, ...summary };
+  return { escrito: write, ...summary, ...(includeRow ? { row } : {}) };
 }
 
 export async function handler() {

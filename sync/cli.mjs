@@ -3,8 +3,9 @@
 //   node sync/cli.mjs --write               → escribe en Supabase
 //   node sync/cli.mjs --desde 2026-01 --hasta 2026-12 [--write]
 //   node sync/cli.mjs --prev backup.json    → prueba sin leer Supabase (toma los nombres de un backup)
+//   node sync/cli.mjs --out carga.json      → además guarda la fila completa (para previsualizar la app)
 // La clave de Supabase se lee de SSM, o de la variable SUPABASE_KEY si está definida.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 process.env.AWS_PROFILE ||= "seeds";
 process.env.AWS_REGION ||= "us-east-1";
@@ -14,5 +15,7 @@ const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? pro
 const prevFile = arg("--prev");
 const prevContracts = prevFile ? (JSON.parse(readFileSync(prevFile, "utf8")).revenue_snapshots?.[0] ?? JSON.parse(readFileSync(prevFile, "utf8"))).contracts : undefined;
 
-const result = await runSync({ write: process.argv.includes("--write"), from: arg("--desde"), to: arg("--hasta"), prevContracts });
+const out = arg("--out");
+const { row, ...result } = await runSync({ write: process.argv.includes("--write"), from: arg("--desde"), to: arg("--hasta"), prevContracts, includeRow: !!out });
+if (out) writeFileSync(out, JSON.stringify(row));
 console.log(JSON.stringify(result, null, 2));

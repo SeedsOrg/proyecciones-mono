@@ -263,7 +263,13 @@ const OWNERS={
   'Juan Maggiolo':[],
 };
 const ACCT2OWNER={}; Object.entries(OWNERS).forEach(([o,as])=>as.forEach(a=>ACCT2OWNER[a]=o));
-function ownerOf(client){return ACCT2OWNER[client]||'Sin asignar';}
+// Dupla por cuenta (viene de la plataforma en el revenue sincronizado): el vendedor proyecta ventas nuevas y
+// el CS extensiones y bajas; sin CS, el vendedor proyecta todo. Sin dupla (CSV de Power BI) se usa OWNERS.
+let DUPLA={};
+function buildDupla(){DUPLA={};CONTRACTS.forEach(c=>{if(c.vendedor!==undefined&&!DUPLA[c.client])DUPLA[c.client]={vendedor:c.vendedor||null,cs:c.cs||null};});}
+function ownerOf(client){const d=DUPLA[client];return d?(d.vendedor||'Sin asignar'):(ACCT2OWNER[client]||'Sin asignar');}
+function retOwnerOf(client){const d=DUPLA[client];return d?(d.cs||d.vendedor||'Sin asignar'):(ACCT2OWNER[client]||'Sin asignar');}
+function people(){const s=new Set(Object.keys(OWNERS));Object.values(DUPLA).forEach(d=>{if(d.vendedor)s.add(d.vendedor);if(d.cs)s.add(d.cs);});return [...s];}
 
 // ===== DEALS (pipeline abierto de HubSpot) =====
 const norm=s=>(s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -377,21 +383,33 @@ function activeAccounts(){
   CONTRACTS.forEach(c=>{const v=bq.idx.reduce((a,i)=>a+c.series[i],0);by[c.client]=(by[c.client]||0)+v;});
   return new Set(Object.keys(by).filter(k=>by[k]>0));
 }
+// cartera de retención (base, extensiones, bajas): cuentas donde es CS, o vendedor si la cuenta no tiene CS
 function contractsFor(comercial,activeSet){
-  return CONTRACTS.filter(c=>activeSet.has(c.client)&&(comercial==='__cons__'||ownerOf(c.client)===comercial));
+  return CONTRACTS.filter(c=>activeSet.has(c.client)&&(comercial==='__cons__'||retOwnerOf(c.client)===comercial));
 }
+// cartera de ventas nuevas: cuentas donde es vendedor
+function salesContractsFor(comercial,activeSet){
+  return CONTRACTS.filter(c=>activeSet.has(c.client)&&ownerOf(c.client)===comercial);
+}
+function acctsOf(o,activeSet){return new Set([...contractsFor(o,activeSet),...salesContractsFor(o,activeSet)].map(c=>c.client));}
 function ckey(c){return c.client+'|'+c.person+'|'+c.ctype;}
+function personLabel(c){return c.person+(c.role?' · '+c.role:'');}
 
 // ===== INIT / TABS =====
 function init(){
+  buildDupla();
   $('#ctrl-card').classList.remove('hidden');$('#panel').classList.remove('hidden');
   const qsel=$('#sel-q');qsel.innerHTML='';
   QUARTERS.forEach((q,i)=>{if(i===0)return;qsel.add(new Option(q.label,q.id));});
-  qsel.value=(QUARTERS[Math.max(1,QUARTERS.length-2)]||{}).id||qsel.value;
+  // por defecto, el trimestre a proyectar: el en curso, o el siguiente si ya estamos en su último mes
+  // (si no está en la data, el anteúltimo como antes)
+  const now=new Date();const tgt=new Date(now.getFullYear(),now.getMonth()+(now.getMonth()%3===2?1:0),1);
+  const nowKey=`${tgt.getFullYear()}-${String(tgt.getMonth()+1).padStart(2,'0')}`;const curQ=QUARTERS.find(q=>q.idx.some(i=>MONTHS[i].key===nowKey));
+  qsel.value=(curQ&&[...qsel.options].some(op=>op.value===curQ.id)?curQ.id:(QUARTERS[Math.max(1,QUARTERS.length-2)]||{}).id)||qsel.value;
   qsel.onchange=()=>{buildTabs();render();};$('#growth').oninput=render;{const cp=$('#churnpct');if(cp)cp.oninput=render;}
   // aterrizar en una pestaña con motor (no en el consolidado de solo lectura)
-  const act=activeAccounts();const order=[...Object.keys(OWNERS),'Sin asignar'];
-  const withAccts=order.filter(o=>new Set(contractsFor(o,act).map(c=>c.client)).size>0);
+  const act=activeAccounts();const order=[...people(),'Sin asignar'];
+  const withAccts=order.filter(o=>acctsOf(o,act).size>0);
   const role=(CURRENT_USER&&CURRENT_USER.role)||'admin';
   if(role==='talent'){ACTIVE='__cons__';}
   else if(role==='comercial'&&CURRENT_USER.comercial_name){ACTIVE=CURRENT_USER.comercial_name;}
@@ -407,11 +425,11 @@ function buildTabs(){
   // consolidated (admin y talent)
   if(canSeeAll){const cons=document.createElement('div');cons.className='ctab cons'+(ACTIVE==='__cons__'?' active':'');
     cons.innerHTML=`Consolidado <span class="badge">${act.size}</span>`;cons.onclick=()=>{ACTIVE='__cons__';render();};ct.appendChild(cons);}
-  const order=[...Object.keys(OWNERS),'Sin asignar'];
+  const order=[...people(),'Sin asignar'];
   order.forEach(o=>{
     if(role==='talent')return;                 // talent: solo consolidado (lectura)
     if(role!=='admin' && o!==mine)return;       // comercial: solo su pestaña
-    const accts=new Set(contractsFor(o,act).map(c=>c.client));
+    const accts=acctsOf(o,act);
     const st=getState(o);const hasProj=st.newLines&&st.newLines.length;
     if(accts.size===0 && o!==mine && !hasProj)return;
     const t=document.createElement('div');
@@ -447,24 +465,29 @@ function render(){
 }
 
 function renderComercial(o){
-  const act=activeAccounts();const list=contractsFor(o,act);
+  const act=activeAccounts();const list=contractsFor(o,act);const salesList=salesContractsFor(o,act);
   const q=projQ(),prev=baseQ();const st=getState(o);
   const curRev=sumQ(list,prev||q),base=sumQ(list,q);
+  // quien solo vende no tiene base a su cargo: las tarjetas muestran sus cuentas como referencia
+  const salesOnly=!list.length&&salesList.length>0;const kList=salesOnly?salesList:list;
+  const kCur=sumQ(kList,prev||q),kBase=sumQ(kList,q);
   const refIdx=(prev||q).idx[2];
-  const activeC=list.filter(c=>c.series[refIdx]>0);
+  const activeC=kList.filter(c=>c.series[refIdx]>0);
   const avg=activeC.length?activeC.reduce((a,c)=>a+c.series[refIdx],0)/activeC.length:0;
   const activeClients=new Set(activeC.map(c=>c.client));
   const revRef=activeC.reduce((a,c)=>a+c.series[refIdx],0);
   const avgClient=activeClients.size?revRef/activeClients.size:0;
   const ending=endingCandidates(list,q,prev);
   const g=growth(),target=curRev*(1+g/100);
-  const accts=[...new Set(list.map(c=>c.client))].sort();
+  const accts=[...acctsOf(o,act)].sort();
 
   let html=`<h2><span class="n">3</span>${o} · ${q.label}</h2>
     <p class="sub">${accts.length} cuentas activas · base ${prev?prev.label:'—'}. La meta es +${g}% sobre el Q anterior.</p>
+    ${Object.keys(DUPLA).length?(()=>{const nv=new Set(salesList.map(c=>c.client)).size,nr=new Set(list.map(c=>c.client)).size;
+      return `<p class="sub">Vendedor en <b>${nv}</b> cuenta${nv===1?'':'s'} (proyectás ventas nuevas) · a cargo de extensiones y bajas en <b>${nr}</b> (como CS, o como vendedor si la cuenta no tiene CS).</p>`;})():''}
     <div class="kpis">
-      ${kpi('Revenue '+(prev?prev.label:q.label),fmt(curRev),'trimestre base','flat')}
-      ${kpi('Base contratada '+q.label,fmt(base),pct(base,curRev),base>=curRev?'up':'down')}
+      ${kpi('Revenue '+(prev?prev.label:q.label),fmt(kCur),salesOnly?'tus cuentas · referencia':'trimestre base','flat')}
+      ${kpi('Base contratada '+q.label,fmt(kBase),salesOnly?'la proyecta el CS':pct(kBase,kCur),salesOnly?'flat':(kBase>=kCur?'up':'down'))}
       ${kpi('Ticket prom./contrato',fmt(avg),activeC.length+' contratos','flat')}
       ${kpi('Contratos a renovar',ending.length+' contratos',fmt(sumQ(ending,prev||q))+' en juego','down')}
     </div>`;
@@ -513,10 +536,11 @@ function renderComercial(o){
     <div class="row-actions"><button class="btn primary" id="btn-save">💾 Guardar proyección</button><button class="btn ghost" id="btn-exp">⬇ Exportar Excel</button><span class="saved-flag" id="save-flag"></span></div>
   </div></div>`;
   $('#panel').innerHTML=html;
-  window.__ctx={o,q,prev,list,ending,accts,target,curRev,base,avg,avgClient};
+  window.__ctx={o,q,prev,list,salesList,ending,accts,target,curRev,base,avg,avgClient};
   // sub-tabs
   $$('#panel .tab').forEach(t=>t.onclick=()=>{$$('#panel .tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');showSub(t.dataset.t);});
-  showSub('ext');
+  const firstSub=salesOnly?'opp':'ext';
+  $$('#panel .tab').forEach(x=>x.classList.toggle('active',x.dataset.t===firstSub));showSub(firstSub);
   $('#btn-exp').onclick=exportExcel;
   const bs=$('#btn-save');if(bs)bs.onclick=()=>{if(typeof saveProjection==='function')saveProjection(window.__ctx.o);};
   // objetivos (admin)
@@ -541,7 +565,7 @@ function showSub(which){
     let h=`<p class="muted" style="margin-bottom:10px">Contratos vigentes de la cartera, ordenados por mayor facturación mensual. ${ong.length} contratos · ${fmt(totM)}/mes · ${fmt(totQ)} en el ${q.label}.</p>
       <div style="overflow-x:auto"><table><thead><tr><th class="num">#</th><th>Cuenta</th><th>Profesional</th><th>Modelo</th><th class="num">Revenue/mes</th><th class="num">Revenue ${q.label}</th><th>Desde</th><th>Vence</th></tr></thead><tbody>`;
     ong.forEach((x,i)=>{const c=x.c;const fi=firstIdx(c),liq=lastIdx(c);
-      h+=`<tr><td class="num">${i+1}</td><td><b>${c.client}</b></td><td>${c.person}</td><td><span class="pill ${c.ctype.toLowerCase()}">${c.ctype}</span></td><td class="num">${fmt(x.rm)}</td><td class="num">${fmt(x.rq)}</td><td>${fi>=0?MONTHS[fi].key:'—'}</td><td>${liq>=0?MONTHS[liq].key:'—'}</td></tr>`;});
+      h+=`<tr><td class="num">${i+1}</td><td><b>${c.client}</b></td><td>${personLabel(c)}</td><td><span class="pill ${c.ctype.toLowerCase()}">${c.ctype}</span></td><td class="num">${fmt(x.rm)}</td><td class="num">${fmt(x.rq)}</td><td>${fi>=0?MONTHS[fi].key:'—'}</td><td>${liq>=0?MONTHS[liq].key:'—'}</td></tr>`;});
     h+=`<tr style="border-top:2px solid var(--ink)"><td></td><td><b>TOTAL</b></td><td></td><td></td><td class="num"><b>${fmt(totM)}</b></td><td class="num"><b>${fmt(totQ)}</b></td><td></td><td></td></tr>`;
     h+='</tbody></table></div>';L.innerHTML=h;return;
   }
@@ -555,7 +579,7 @@ function showSub(which){
       const isCh=st.churn[k]!=null;const fromV=isCh?st.churn[k]:0;
       h+=`<tr data-k="${k}">
         <td><input type="checkbox" class="chk ch-c" ${isCh?'checked':''}></td>
-        <td><b>${c.client}</b><br><span class="muted">${c.person}</span></td>
+        <td><b>${c.client}</b><br><span class="muted">${personLabel(c)}</span></td>
         <td><span class="pill ${c.ctype.toLowerCase()}">${c.ctype}</span></td>
         <td class="num">${fmt(qrev)}</td>
         <td><select class="prob ch-from" ${isCh?'':'disabled'}>${qChurnOptions(fromV)}</select></td>
@@ -579,7 +603,7 @@ function showSub(which){
       const checked=st.unchecked[k]?'':'checked';
       h+=`<tr data-k="${k}">
         <td><input type="checkbox" class="chk ex-c" ${checked}></td>
-        <td><b>${c.client}</b><br><span class="muted">${c.person}</span></td>
+        <td><b>${c.client}</b><br><span class="muted">${personLabel(c)}</span></td>
         <td><span class="pill ${c.ctype.toLowerCase()}">${c.ctype}</span></td>
         <td><span class="pill ${endNow?'end-now':'end-soon'}">${MONTHS[li].key}</span></td>
         <td class="num"><input type="number" class="prob ex-tk" value="${Math.round(tkv)}" min="0" step="100" style="width:78px"></td>
@@ -611,8 +635,8 @@ function showSub(which){
     $('#nb-add').onclick=()=>{const tmap=acctTicketMap();const a0=accts[0]||'';const dt=Math.round(tmap[a0]||(window.__ctx&&window.__ctx.avg)||0)||1200;st.newLines.push({account:a0,isNew:false,newName:'',qty:1,ticket:dt,dur:6,start:0,area:'',rol:''});renderNbLines();recalc();};
   }
   else if(which==='opp'){
-    const ops=opportunities(window.__ctx.list,q,prev);
-    const vel=velocity(window.__ctx.list,q);
+    const ops=opportunities(window.__ctx.salesList,q,prev);
+    const vel=velocity(window.__ctx.salesList,q);
     const pdeals=dealsFor(o).sort((a,b)=>b.prob-a.prob);
     let h='';
     // --- PIPELINE ABIERTO (si se cargó el CSV de deals) ---
@@ -687,13 +711,13 @@ function startText(s,q){const v=+s||0;const m=Math.floor(v);const half=(v-m)>=0.
   let name='mes '+(m+1);if(q&&q.idx&&q.idx[m]!=null){const k=MONTHS[q.idx[m]]&&MONTHS[q.idx[m]].key;const mm=k?+k.split('-')[1]:0;if(mm)name=MES_ABBR[mm-1];}
   return (half?'Mitad ':'')+name+(half?'':' (inicio)');}
 function acctTicketMap(){
-  const ctx=window.__ctx||{};const list=ctx.list||[];const q=ctx.q,prev=ctx.prev;if(!q)return {};
+  const ctx=window.__ctx||{};const list=[...new Set([...(ctx.list||[]),...(ctx.salesList||[])])];const q=ctx.q,prev=ctx.prev;if(!q)return {};
   const refIdx=(prev||q).idx[2];const m={};
   list.forEach(c=>{if(!(c.series[refIdx]>0))return;(m[c.client]=m[c.client]||{rev:0,n:0});m[c.client].rev+=c.series[refIdx];m[c.client].n++;});
   const out={};Object.entries(m).forEach(([k,v])=>out[k]=v.n?v.rev/v.n:0);return out;
 }
 function acctContratosMap(){
-  const ctx=window.__ctx||{};const list=ctx.list||[];const q=ctx.q,prev=ctx.prev;if(!q)return {};
+  const ctx=window.__ctx||{};const list=[...new Set([...(ctx.list||[]),...(ctx.salesList||[])])];const q=ctx.q,prev=ctx.prev;if(!q)return {};
   const refIdx=(prev||q).idx[2];const m={};
   list.forEach(c=>{if(!(c.series[refIdx]>0))return;m[c.client]=(m[c.client]||0)+1;});return m;
 }
@@ -838,7 +862,7 @@ function renderConsolidated(){
   const act=activeAccounts();const q=projQ(),prev=baseQ();
   const all=contractsFor('__cons__',act);
   const curRev=sumQ(all,prev||q),base=sumQ(all,q);const g=growth(),target=curRev*(1+g/100);
-  const order=[...Object.keys(OWNERS),'Sin asignar'];
+  const order=[...people(),'Sin asignar'];
   const rows=[];let tExist=0,tLogo=0,tExt=0,tNewQ=0,tChurn=0;const allLogos=[];const allNew=[];
   order.forEach(o=>{const list=contractsFor(o,act);const stO=getState(o);
     if(!list.length && !(stO.newLines&&stO.newLines.length))return;
@@ -852,7 +876,7 @@ function renderConsolidated(){
       cuenta:l.isNew?(l.newName||'cuenta nueva'):l.account,tipo:l.isNew?'Logo nuevo':'Existente',
       rol:l.rol||'a definir',area:l.area||'a definir',qty:+l.qty,ticket:+l.ticket,dur:+l.dur,
       tcv:(+l.qty)*(+l.ticket)*(+l.dur)}));
-    rows.push({o,accts:new Set(list.map(c=>c.client)).size,cur,base:b,ext,churn:chn,
+    rows.push({o,accts:acctsOf(o,act).size,cur,base:b,ext,churn:chn,
       existTCV:nb.existTCV,logoTCV:nb.logoTCV,retQ:b+ext+nb.existQ+nb.logoQ-chn,target:cur*(1+g/100),
       nrrProj:b+ext+nb.existQ-chn,obj:OBJECTIVES[o]||{}});});
   const totRetQ=base+tExt+tNewQ-tChurn;
@@ -981,12 +1005,12 @@ function computeComercial(o,q,prev,act){
   const save=window.__ctx;window.__ctx={o,q,ending,list};const ext=extExpected(o);const churn=totalChurn(o,base);window.__ctx=save;
   const nb=newBreakdown(o);const g=growth();
   const newQ=nb.existQ+nb.logoQ;const total=base+ext+newQ-churn;const target=cur*(1+g/100);
-  return{o,list,cur,base,ending,ext,churn,nb,newQ,total,target,g,accts:new Set(list.map(c=>c.client)).size};
+  return{o,list,cur,base,ending,ext,churn,nb,newQ,total,target,g,accts:acctsOf(o,act).size};
 }
 function sheetName(o){return o.replace(' (Mono)','').replace(/[\\\/\?\*\[\]:]/g,'').slice(0,31);}
 function exportExcelBasic(){
   const act=activeAccounts();const q=projQ(),prev=baseQ();const g=growth();
-  const order=[...Object.keys(OWNERS),'Sin asignar'].filter(o=>new Set(contractsFor(o,act).map(c=>c.client)).size>0);
+  const order=[...people(),'Sin asignar'].filter(o=>acctsOf(o,act).size>0||(getState(o).newLines||[]).length>0);
   const data=order.map(o=>computeComercial(o,q,prev,act));
   const wb=XLSX.utils.book_new();
 
@@ -1083,7 +1107,7 @@ function groupChart(title,groups){
 
 async function exportExcelStyled(){
   const act=activeAccounts();const q=projQ(),prev=baseQ();const g=growth();
-  const order=[...Object.keys(OWNERS),'Sin asignar'].filter(o=>new Set(contractsFor(o,act).map(c=>c.client)).size>0);
+  const order=[...people(),'Sin asignar'].filter(o=>acctsOf(o,act).size>0||(getState(o).newLines||[]).length>0);
   const data=order.map(o=>computeComercial(o,q,prev,act));
   const GREEN='FF00B37E',INK='FF1D1D1B',LIGHT='FFD0F0E3',WHITE='FFFFFFFF',GREY='FFF5F5F5',AMBER='FFE8A317',MUT='FF777777',BORD='FFE6E6E6';
   const wb=new ExcelJS.Workbook();wb.creator='Seeds';
