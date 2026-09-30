@@ -1,0 +1,10 @@
+{
+  "name": "proyecciones-sync",
+  "private": true,
+  "type": "module",
+  "description": "Sync nocturno plataforma de Seeds → Supabase de la herramienta de proyección",
+  "devDependencies": {
+    "@aws-sdk/client-lambda": "^3.600.0",
+    "@aws-sdk/client-ssm": "^3.600.0"
+  }
+}
