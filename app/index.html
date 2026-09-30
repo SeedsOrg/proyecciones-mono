@@ -196,14 +196,8 @@ details.howto b{color:var(--ink)}
 
   <!-- 1. CARGA -->
   <div class="card">
-    <h2><span class="n">1</span>Cargá el export de Power BI</h2>
-    <p class="sub">Arrastrá el CSV o Excel tal cual lo bajás. Solo se consideran cuentas que facturan en el trimestre base. Todo corre en tu navegador.</p>
-    <div id="drop">
-      <div class="ico">📊</div>
-      <div class="big">Arrastrá el archivo acá o hacé click</div>
-      <div class="small">.csv · .xlsx — formato Info por cliente</div>
-      <input type="file" id="file" accept=".csv,.xlsx,.xls" style="display:none">
-    </div>
+    <h2><span class="n">1</span>Revenue</h2>
+    <p class="sub">Se sincroniza solo con la plataforma todas las noches (contratos firmados, ganancia mensual en USD). Ya no hace falta cargar el export de Power BI. Solo se consideran cuentas que facturan en el trimestre base.</p>
     <div class="loaded" id="loaded">✓ <span id="loaded-txt"></span></div>
   </div>
 
@@ -906,6 +900,19 @@ function renderConsolidated(){
       <td class="num"><b>${fmt(tExt)}</b></td><td class="num"><b>${fmt(totRetQ)}</b></td>
       <td class="num" style="color:${totRetQ>=target?'var(--green)':'var(--red)'}">${totRetQ>=target?'✓':fmt(totRetQ-target)}</td></tr>`;
   html+=`</tbody></table></div>`;
+  // cuentas y duplas (solo con revenue de la plataforma, que trae vendedor y CS por cuenta)
+  if(Object.keys(DUPLA).length){
+    const ref=prev||q;
+    const accs=[...act].map(a=>{const cs=all.filter(c=>c.client===a);
+      return{a,v:ownerOf(a),cs:(DUPLA[a]&&DUPLA[a].cs)||'',rev:sumQ(cs,ref),base:sumQ(cs,q),n:cs.filter(c=>c.series[ref.idx[2]]>0).length};})
+      .sort((x,y)=>y.rev-x.rev);
+    html+=`<details class="logo-group" style="margin:24px 0 8px"><summary><span class="co">Cuentas y duplas</span><span class="lg-meta">${accs.length} cuentas · el vendedor proyecta ventas nuevas y el CS extensiones y bajas</span></summary>
+      <div style="overflow-x:auto"><table class="lg-roles"><thead><tr><th>Cuenta</th><th>Vendedor</th><th>CS</th><th class="num">Revenue ${ref.label}</th><th class="num">Base ${q.label}</th><th class="num">Contratos</th></tr></thead><tbody>`;
+    accs.forEach(x=>{html+=`<tr><td><b>${x.a}</b></td><td>${x.v.replace(' (Mono)','')}</td>
+      <td>${x.cs?x.cs.replace(' (Mono)',''):'<span class="muted">sin CS · lo hace el vendedor</span>'}</td>
+      <td class="num">${fmt(x.rev)}</td><td class="num">${fmt(x.base)}</td><td class="num">${x.n}</td></tr>`;});
+    html+='</tbody></table></div></details>';
+  }
   // objetivos vs proyectado
   const cell=(meta,proj)=>{ if(!meta)return `<td class="num">${fmt(proj)}</td><td class="num"><span class="muted">sin meta</span></td>`;
     const ok=proj>=meta;return `<td class="num">${fmt(proj)}</td><td class="num" style="color:${ok?'var(--green)':'var(--red)'}">${fmt(meta)} ${ok?'✓':'('+fmt(proj-meta)+')'}</td>`;};
@@ -1203,11 +1210,12 @@ function dl(rows,name){const csv=rows.map(r=>r.map(x=>`"${x}"`).join(',')).join(
   a.href=URL.createObjectURL(b);a.download=name+'.csv';a.click();}
 
 // ===== DROPZONE =====
+// (la carga manual del export de Power BI se sacó de la página: el revenue se sincroniza solo)
 const drop=$('#drop'),fi=$('#file');
-drop.onclick=()=>fi.click();fi.onchange=e=>{if(e.target.files[0])readFile(e.target.files[0]);};
+if(drop){drop.onclick=()=>fi.click();fi.onchange=e=>{if(e.target.files[0])readFile(e.target.files[0]);};
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
-drop.addEventListener('drop',e=>{if(e.dataTransfer.files[0])readFile(e.dataTransfer.files[0]);});
+drop.addEventListener('drop',e=>{if(e.dataTransfer.files[0])readFile(e.dataTransfer.files[0]);});}
 const drop2=$('#drop2'),fi2=$('#file2');
 if(drop2){drop2.onclick=()=>fi2.click();fi2.onchange=e=>{if(e.target.files[0])readDeals(e.target.files[0]);};
 ['dragover','dragenter'].forEach(ev=>drop2.addEventListener(ev,e=>{e.preventDefault();drop2.style.borderColor='var(--green)';}));
@@ -1301,7 +1309,8 @@ drop2.addEventListener('drop',e=>{if(e.dataTransfer.files[0])readDeals(e.dataTra
       CONTRACTS=data.contracts;
       buildQuarters();
       const ld=document.getElementById('loaded');if(ld)ld.style.display='flex';
-      const lt=document.getElementById('loaded-txt');if(lt)lt.textContent=`Revenue cargado desde la base — ${CONTRACTS.length} contratos · ${MONTHS.length} meses`;
+      const upd=data.created_at?new Date(data.created_at).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+      const lt=document.getElementById('loaded-txt');if(lt)lt.textContent=`Revenue de la plataforma — ${CONTRACTS.length} contratos · ${MONTHS.length} meses${upd?' · actualizado '+upd:''}`;
       init();
       return true;
     }catch(e){return false;}
