@@ -619,8 +619,8 @@ function showSub(which){
     });
   }
   else if(which==='new'){
-    let h=`<p class="muted" style="margin-bottom:6px">Proyectá nuevos contratos. Elegí una cuenta existente o creá una nueva. Área y rol son <b>opcionales</b>. El <b>inicio</b> define cuánto del contrato cae dentro del trimestre (medio mes cuenta como 0,5); el TCV total no cambia.</p>
-      <div class="nb-line head"><label>Cuenta</label><label>Contratos</label><label>Ticket/mes</label><label>Dur. (m)</label><label>Inicio</label><label>Área (opc.)</label><label>Rol (opc.)</label><label></label></div>
+    let h=`<p class="muted" style="margin-bottom:6px">Proyectá nuevos contratos. Elegí una cuenta existente o creá una nueva. Área y rol son <b>obligatorios</b> (Talent Acquisition busca con eso). El <b>inicio</b> define cuánto del contrato cae dentro del trimestre (medio mes cuenta como 0,5); el TCV total no cambia.</p>
+      <div class="nb-line head"><label>Cuenta</label><label>Contratos</label><label>Ticket/mes</label><label>Dur. (m)</label><label>Inicio</label><label>Área *</label><label>Rol *</label><label></label></div>
       <div id="nb-list"></div>
       <button class="btn ghost sm" id="nb-add" style="margin-top:6px">+ Agregar línea</button>`;
     L.innerHTML=h;renderNbLines();
@@ -721,6 +721,9 @@ function acctContratosMap(){
   const refIdx=(prev||q).idx[2];const m={};
   list.forEach(c=>{if(!(c.series[refIdx]>0))return;m[c.client]=(m[c.client]||0)+1;});return m;
 }
+const REQ_EMPTY='border-color:var(--amber);background:#FFFDF5';
+// líneas de ventas nuevas a las que les falta área o rol (obligatorios para el brief de Talent Acquisition)
+function nbMissingAreaRol(o){return getState(o).newLines.filter(l=>(+l.qty)>0&&(!l.area||!l.rol)).length;}
 function renderNbLines(){
   const {o,accts}=window.__ctx;const st=getState(o);const c=$('#nb-list');if(!c)return;c.innerHTML='';
   if(!st.newLines.length){c.innerHTML='<div class="empty" style="padding:14px">Sin líneas. Agregá una para proyectar nuevos.</div>';return;}
@@ -736,8 +739,8 @@ function renderNbLines(){
       <div><div class="input-mini"><span>$</span><input type="number" class="nb-ticket" value="${(+l.ticket)||''}" min="0" step="100" placeholder="completar" style="${(+l.ticket)?'':'border-color:var(--amber);background:#FFFDF5'}"></div></div>
       <div><input type="number" class="nb-dur" value="${l.dur}" min="1" max="24"></div>
       <div><select class="nb-start">${qStartOptions(l.start)}</select></div>
-      <div><input type="text" class="nb-area" placeholder="—" value="${l.area||''}"></div>
-      <div><input type="text" class="nb-rol" placeholder="—" value="${l.rol||''}"></div>
+      <div><input type="text" class="nb-area" placeholder="obligatorio" value="${l.area||''}" style="${l.area?'':REQ_EMPTY}"></div>
+      <div><input type="text" class="nb-rol" placeholder="obligatorio" value="${l.rol||''}" style="${l.rol?'':REQ_EMPTY}"></div>
       <button class="nb-del" title="Eliminar">×</button>`;
     c.appendChild(div);
     const upd=()=>{recalc();};
@@ -748,8 +751,8 @@ function renderNbLines(){
     div.querySelector('.nb-ticket').oninput=e=>{l.ticket=+e.target.value;upd();};
     div.querySelector('.nb-dur').oninput=e=>{l.dur=+e.target.value;upd();};
     div.querySelector('.nb-start').onchange=e=>{l.start=+e.target.value;upd();};
-    div.querySelector('.nb-area').oninput=e=>{l.area=e.target.value;};
-    div.querySelector('.nb-rol').oninput=e=>{l.rol=e.target.value;};
+    div.querySelector('.nb-area').oninput=e=>{l.area=e.target.value.trim();e.target.style.cssText=l.area?'':REQ_EMPTY;};
+    div.querySelector('.nb-rol').oninput=e=>{l.rol=e.target.value.trim();e.target.style.cssText=l.rol?'':REQ_EMPTY;};
     div.querySelector('.nb-del').onclick=()=>{st.newLines.splice(i,1);renderNbLines();recalc();};
   });
 }
@@ -1252,6 +1255,8 @@ drop2.addEventListener('drop',e=>{if(e.dataTransfer.files[0])readDeals(e.dataTra
   // exponer save/load para el resto de la app
   window.saveProjection=async function(o){
     if(!SB||!CURRENT_USER){alert('Iniciá sesión para guardar.');return;}
+    const faltan=nbMissingAreaRol(o);
+    if(faltan){const f=document.getElementById('save-flag');if(f)f.textContent=`Completá área y rol en ${faltan} línea${faltan===1?'':'s'} de "Nuevos a vender".`;return;}
     const st=getState(o);const row={comercial_name:o,quarter:projQ().id,growth_pct:growth(),
       payload:{newLines:st.newLines,unchecked:st.unchecked,extTicket:st.extTicket,extDur:st.extDur,extStart:st.extStart,churn:st.churn},updated_by:CURRENT_USER.id,updated_at:new Date().toISOString()};
     const flag=document.getElementById('save-flag');if(flag)flag.textContent='Guardando…';
